@@ -60,11 +60,9 @@ import uuid
 bus = dbus.SystemBus()
 
 # Get a proxy and an interface for the base NetworkManager object
-proxy = bus.get_object("org.freedesktop.NetworkManager", "/org/freedesktop/NetworkManager")
-manager = dbus.Interface(proxy, "org.freedesktop.NetworkManager")
-#New
+
 nm_proxy = bus.get_object("org.freedesktop.NetworkManager", "/org/freedesktop/NetworkManager")
-nm_iface = dbus.Interface(proxy, "org.freedesktop.NetworkManager")
+nm_iface = dbus.Interface(nm_proxy, "org.freedesktop.NetworkManager")
     
 nm_properties = dbus.Interface(nm_proxy, "org.freedesktop.DBus.Properties")
 nm_settings_proxy = bus.get_object("org.freedesktop.NetworkManager", "/org/freedesktop/NetworkManager/Settings")
