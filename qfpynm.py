@@ -26,17 +26,13 @@
 #    examples
 #    http://cgit.freedesktop.org/NetworkManager/NetworkManager/tree/examples/python
 
-#TODO disconnect connection instead of the device?
-#TODO Make sure to add logic for WEP & None in change password
+
 #TODO Reverse the list puting strongest first
 #TODO What if more than one wifi card exists? list devices and select which one we mean
 #TODO catch errors on the dbus actions..including the import. Test with nm not installed etc.
 #TODO Check if the ssid is already added, if so just activate it and set to auto / or new name
-#TODO Test to connect to WEP & None (and all different router settings)
-#TODO Monitor state, what if wrong pwd etc. example/nm-state only detects not active,activating - active
-#TODO Display status as the applet tool tip
 #TODO Test state when switching from one wifi to another. make sure no delay from state 100 on old
-#TODO Create/find a soft system for getting and setting properties in the connecton settings
+
 
 #Longer term
 #TODO Add detection of group/enterprise encryption
@@ -247,6 +243,10 @@ def print_wireless():
             net_dict['essid'],
             net_dict['encrypt'])
 
+def get_nm_state():
+    state = nm_iface.state()
+    return state, nm_state[state]
+
 def get_device_state(dev_path):
     dev_proxy = bus.get_object("org.freedesktop.NetworkManager", dev_path)
     dev_prop_iface = dbus.Interface(dev_proxy, "org.freedesktop.DBus.Properties")
@@ -266,18 +266,22 @@ def activate_connection(uuid):
     # Now ask NM to activate that connection
     con_path = nm_settings_iface.GetConnectionByUuid(uuid)
     dev_path = get_wifi_device()
-    
     #active_path = nm_iface.ActivateConnection(con_path, dev_path, "/")    
     nm_iface.ActivateConnection(con_path, dev_path, "/")
 
 
-def deactivate_connection(uuid):
-    active_connections = get_all_active_con()
-           
-    if uuid in active_connections:
-        con_path = nm_settings_iface.GetConnectionByUuid(uuid)   
-        nm_iface.DeactivateConnection(con_path)
+def deactivate_connection(uuid):        
+    active_con_paths = nm_properties.Get("org.freedesktop.NetworkManager", "ActiveConnections")
+    #NB: This returns connection.active paths not the usual settings.connection paths
+    #    The variable con refers to setting_con
 
+    for active_con_path in active_con_paths:
+        active_con_proxy = bus.get_object("org.freedesktop.NetworkManager", active_con_path)
+
+        active_con_props = dbus.Interface(active_con_proxy, "org.freedesktop.DBus.Properties")
+        active_uuid = active_con_props.Get("org.freedesktop.NetworkManager.Connection.Active", "Uuid")
+        if active_uuid == uuid:
+            nm_iface.DeactivateConnection(active_con_path)
 
 def delete_connection(uuid):  
     con_path = nm_settings_iface.GetConnectionByUuid(uuid)
@@ -286,39 +290,63 @@ def delete_connection(uuid):
         
     con_iface.Delete()
 
-def create_wifi_config(uuid,ssid,akey):
-    s_con = { 'id': ssid, 'uuid': uuid, 'type': '802-11-wireless', 'autoconnect': True, 'name': 'connection' }
-    s_wifi = { 'ssid': dbus.ByteArray(ssid), 'mode': 'infrastructure', 'security': '802-11-wireless-security', 'name': '802-11-wireless' } 
+def create_wifi_config(ssid,akey,encryption,wep_alg):
+    
+    encryption = encryption.upper()
+    if encryption[:3] == 'WPA':
+        encryption = encryption[:3]
+            
+    newuuid = str(uuid.uuid1())
+    s_con = { 'id': ssid, 'uuid': newuuid, 'type': '802-11-wireless', 'autoconnect': True, 'name': 'connection' }
+    
+    #s_wifi = { 'ssid': dbus.ByteArray(ssid), 'mode': 'infrastructure', 'security': '802-11-wireless-security', 'name': '802-11-wireless' } 
+
+    s_wifi = {}
+    s_wifi['ssid'] = dbus.ByteArray(ssid)
+    if encryption != 'NONE':
+        s_wifi['security'] = '802-11-wireless-security'
+    s_wifi['mode'] = 'infrastructure', 
+    s_wifi['name'] =  '802-11-wireless' 
+
+
     s_ip4 = { 'method': 'auto', 'name': 'ipv4' } 
     s_ip6 = { 'method': 'ignore', 'name': 'ipv6' } 
     
-    encryption = "WPA"
-    wep_alg = 'shared'
-    
+
+    s_wsec = {}
     if (encryption == "WPA"):
-        s_wsec = { 'key-mgmt': 'wpa-psk', 'psk': akey, 'name': '802-11-wireless-security' } 
+        s_wsec['key-mgmt'] = 'wpa-psk'
+        s_wsec['psk'] = akey
+        s_wsec['name'] = '802-11-wireless-security' 
     elif (encryption == "WEP"):
+        s_wsec['key-mgmt'] = 'none'
+        s_wsec['wep-key0'] = akey
         if wep_alg == 'shared':
-            s_wsec = { 'key-mgmt': 'none', 'wep-key0': akey, 'auth-alg': 'shared', 'name': '802-11-wireless-security' }
-        else:
-            s_wsec = { 'key-mgmt': 'none', 'wep-key0': akey, 'name': '802-11-wireless-security' }
-    else:
-        s_wsec = {'name': '802-11-wireless-security' }
-    
-    config = { 'connection': s_con, '802-11-wireless': s_wifi, '802-11-wireless-security': s_wsec, 'ipv4': s_ip4,'ipv6': s_ip6 }    
+            s_wsec['auth-alg'] = 'shared'
+        s_wsec['name'] = '802-11-wireless-security' 
+    else:# No encryption
+        pass
+
+    if encryption != 'NONE':
+        config = { 'connection': s_con, '802-11-wireless': s_wifi, '802-11-wireless-security': s_wsec, 'ipv4': s_ip4,'ipv6': s_ip6 }
+    else:    
+        config = { 'connection': s_con, '802-11-wireless': s_wifi, 'ipv4': s_ip4,'ipv6': s_ip6 }
     return config
 
-def add_wifi(ssid,akey):
-    config = create_wifi_config(str(uuid.uuid1()),ssid,akey)
+def add_wifi(ssid,akey,encryption,wep_alg):
+    config = create_wifi_config(ssid,akey,encryption,wep_alg)
     con_path =  nm_settings_iface.AddConnection(config)
     activate_connection(get_con_uuid_by_path(con_path))
 
     return con_path
    
     
-def update_wifi(uuid,akey):
-    #Add logic to use the correct key for encryption key depending on encryption type
-
+def update_wifi(uuid,akey, encryption):
+    
+    encryption = encryption.upper()
+    if encryption[:3] == 'WPA':
+        encryption = encryption[:3]
+        
     con_path = nm_settings_iface.GetConnectionByUuid(uuid)
 
     con_proxy = bus.get_object("org.freedesktop.NetworkManager", con_path)
@@ -330,18 +358,28 @@ def update_wifi(uuid,akey):
 
     #Chnage password
     #config['802-11-wireless-security'] = { 'key-mgmt': 'wpa-psk', 'psk': akey, 'name': '802-11-wireless-security' } 
-    config['802-11-wireless-security']['psk'] = akey
- 
+    if (encryption == "WPA"):
+        config['802-11-wireless-security']['psk'] = akey
+    elif (encryption == "WEP"):
+        config['802-11-wireless-security']['wep-key0'] = akey
+    else:
+        pass
     # Change the connection with Update()
     con_iface.Update(config)
 
 
-def validate_wifi_input(akey, enc_type):
+def validate_wifi_input(akey, encryption):
     errors = ''
-    if enc_type == 'WEP' and len(akey) != 10 and len(akey) != 26:
+    
+    encryption = encryption.upper()
+    if encryption[:3] == 'WPA':
+        encryption = encryption[:3]
+            
+    if encryption == 'WEP' and len(akey) != 10 and len(akey) != 26:
         errors = 'WEP hex-key len should be 10 (64 bits) or 26 (128 bits)'
-    if enc_type == 'WPA' and len(akey) < 7:
+    if encryption == 'WPA' and len(akey) < 7:
         errors = 'WPA hex-key len should be minimum 7 characters'
+        
     return errors
 
 
@@ -408,6 +446,15 @@ nm_device_state = { 0: "Unknown",
            110: "Deactivating",
            120: "Failed" }
 
+nm_state  = {
+            0: "unknown",
+            10: "Inactive",
+            20: "Disconnected",
+            30: "Disconnecting",
+            40: "Connecting",
+            50: "A network device is connected, but there is only link-local connectivity.",
+            60: "A network device is connected, but there is only site-local connectivity.",
+            70: "A network device is connected, with global network connectivity."}
 
 ########################################################################
 
@@ -420,8 +467,10 @@ if __name__ == '__main__':
     print "4 Disconnect (wifi)"
     print "5 Remove connection"
     print "6 activate connection"
-    print "7 Device state"
+    print "7 State"
     print "8 Chnage pwd on WPA connection by UUID"
+    print "9 Deactivete connection by UUID"
+    
     
     aSelect = raw_input('Please enter a value:')
 
@@ -432,11 +481,16 @@ if __name__ == '__main__':
     if aSelect == "2":
         aNetwork_id = (raw_input('Enter network SSID :'))
         akey = raw_input("Enter the encryption key:")
-        errors = validate_wifi_input(akey,'WPA')
+        aencryption = raw_input("Enter the encryption type (WPA,WEP, NONE:")
+        if aencryption == 'WEP':
+            wep_alg = 'shared'
+        else:
+            wep_alg = ''
+        errors = validate_wifi_input(akey,aencryption)
         if not errors == '':
             print (errors)
             1/0
-        acon_path = add_wifi(aNetwork_id, akey)
+        acon_path = add_wifi(aNetwork_id,akey,aencryption,wep_alg)
         import time
         for i in range(1, 150):
             state,stateTXT = get_device_state(get_wifi_device())
@@ -453,10 +507,8 @@ if __name__ == '__main__':
         elif state == 60  or state == 30:
             print "bad key?"
             aUUID = get_con_uuid_by_path(acon_path)
-            #is deactive/activate really the best way?
-            deactivate_connection(aUUID)
             akey = raw_input("Enter the encryption key:")
-            update_wifi(aUUID, akey)
+            update_wifi(aUUID, akey, aencryption)
             activate_connection(aUUID)
             for i in range(1, 150):
                 state,stateTXT = get_device_state(get_wifi_device())
@@ -488,9 +540,12 @@ if __name__ == '__main__':
             import time
             for i in range(1, 150):
                 state,stateTXT = get_device_state(get_wifi_device())
+                print("-------------------------")
                 print(str(state) +'-' + stateTXT) 
-                #print (i)   
-                time.sleep(1)
+                state,stateTXT = get_nm_state()
+                print(str(state) +'-' + stateTXT) 
+                print (i)   
+                #time.sleep(1)
                 
     if aSelect == "8":
             aUUID =  (raw_input('Enter UUID:'))
@@ -498,4 +553,7 @@ if __name__ == '__main__':
             update_wifi(aUUID,akey)
             #e51322cc-56ca-490a-9308-f2c7c3e573c6
 
+    if aSelect == "9":
+        aUUID =  (raw_input('Enter UUID:'))
+        deactivate_connection(aUUID)
 
