@@ -47,7 +47,6 @@
 #    Only wifi for now
 #    only ipv4
 #    Only dhcp
-#    Only WPA connections
 #    Does not display enterprise/group enncryptions
 
 import dbus
